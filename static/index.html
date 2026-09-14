@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>톡소설</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Gowun+Batang:wght@400;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+
+<header class="topbar">
+  <button class="wordmark" id="homeBtn">톡소설</button>
+  <span class="who" id="who"></span>
+</header>
+
+<main id="app">
+
+  <!-- 1. 닉네임 -->
+  <section class="view" id="view-name">
+    <p class="lede">친구들이 한 줄씩 던지면<br>AI가 그 뒤를 이어 씁니다.</p>
+    <label class="field">
+      <span>여기서 쓸 이름</span>
+      <input id="nicknameInput" maxlength="12" placeholder="규민" autocomplete="off">
+    </label>
+    <button class="primary" id="nameBtn">시작하기</button>
+  </section>
+
+  <!-- 2. 로비 -->
+  <section class="view" id="view-lobby" hidden>
+    <div class="stack">
+      <div class="panel">
+        <h2>방 만들기</h2>
+        <label class="field">
+          <span>방 이름</span>
+          <input id="roomName" maxlength="20" placeholder="야자 끝나고 쓰는 방" autocomplete="off">
+        </label>
+        <div class="row">
+          <label class="field small">
+            <span>바퀴 제한</span>
+            <input id="maxRounds" type="number" min="1" max="20" value="20">
+          </label>
+          <label class="field small">
+            <span>턴 대기 시간</span>
+            <input id="timeoutHours" type="number" min="1" max="168" value="24">
+          </label>
+        </div>
+        <p class="hint" id="ruleHint"></p>
+        <button class="primary" id="createBtn">방 만들기</button>
+      </div>
+
+      <div class="panel">
+        <h2>초대 코드로 들어가기</h2>
+        <label class="field">
+          <span>친구에게 받은 6자리 코드</span>
+          <input id="joinCode" maxlength="6" placeholder="K7B2QX" autocomplete="off">
+        </label>
+        <button class="ghost" id="joinBtn">들어가기</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- 3. 대기실 -->
+  <section class="view" id="view-waiting" hidden>
+    <h1 class="room-title" id="waitRoomName"></h1>
+    <div class="code-card">
+      <span class="code-label">초대 코드</span>
+      <strong class="code" id="inviteCode"></strong>
+      <button class="ghost tiny" id="copyCodeBtn">복사</button>
+    </div>
+    <ol class="member-list" id="waitMembers"></ol>
+    <p class="hint" id="waitHint"></p>
+    <div class="host-only" id="startBox" hidden>
+      <label class="field">
+        <span>장르</span>
+        <input id="genreInput" maxlength="20" placeholder="학원물, 미스터리, 아무거나" autocomplete="off">
+      </label>
+      <label class="field">
+        <span>첫 상황 한 줄 (비워두면 다음 사람부터 시작)</span>
+        <input id="openingInput" maxlength="200" placeholder="교실 뒷문이 안에서 잠겼다." autocomplete="off">
+      </label>
+      <button class="primary" id="startBtn">이야기 시작</button>
+    </div>
+  </section>
+
+  <!-- 4. 집필 -->
+  <section class="view wide" id="view-story" hidden>
+    <div class="turnbar" id="turnbar">
+      <div class="turnbar-main">
+        <span class="turn-who" id="turnWho"></span>
+        <span class="turn-meta" id="turnMeta"></span>
+      </div>
+      <span class="countdown" id="countdown"></span>
+    </div>
+
+    <div class="suggestion" id="suggestBox" hidden>
+      <p id="suggestText"></p>
+      <div class="row">
+        <button class="primary tiny" id="acceptEndBtn">여기서 완결</button>
+        <button class="ghost tiny" id="dismissEndBtn">더 쓸래</button>
+      </div>
+    </div>
+
+    <article class="thread" id="thread"></article>
+
+    <div class="composer" id="composer">
+      <textarea id="lineInput" rows="2" maxlength="200"
+                placeholder="상황이나 대사를 한 줄로 던져보세요"></textarea>
+      <div class="composer-foot">
+        <span class="counter" id="counter">0 / 200</span>
+        <button class="primary" id="sendBtn">이어쓰기</button>
+      </div>
+    </div>
+
+    <div class="composer-locked" id="composerLocked" hidden></div>
+
+    <div class="host-controls" id="hostControls" hidden>
+      <button class="ghost tiny" id="forceEndBtn">이야기 완결하기</button>
+    </div>
+  </section>
+
+  <!-- 5. 완결 -->
+  <section class="view wide" id="view-done" hidden>
+    <div class="book">
+      <img id="coverImg" alt="" class="cover" hidden>
+      <h1 class="book-title" id="doneTitle"></h1>
+      <p class="book-meta" id="doneMeta"></p>
+    </div>
+    <article class="thread" id="doneThread"></article>
+    <p class="epilogue" id="doneEpilogue"></p>
+    <div class="row done-actions">
+      <button class="primary" id="downloadBtn">원고 내려받기</button>
+      <button class="ghost" id="printBtn">PDF로 저장</button>
+      <button class="ghost" id="shareBtn">링크 복사</button>
+    </div>
+  </section>
+
+</main>
+
+<div class="toast" id="toast" hidden></div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
