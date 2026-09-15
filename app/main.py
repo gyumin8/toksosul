@@ -60,6 +60,12 @@ def ai_check(image: int = 0):
     return ai.ping(test_image=bool(image))
 
 
+@app.get("/api/quota")
+def get_quota():
+    """벤더별 오늘 호출 수/한도. AI를 호출하지 않으므로 데모 중 계속 열어둬도 된다."""
+    return ai.quota_status()
+
+
 # ------------------------------------------------------------------ 유저
 @app.post("/api/users")
 def create_user(body: UserCreate, db: Session = Depends(get_db)):

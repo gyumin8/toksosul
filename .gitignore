@@ -1,5 +1,6 @@
 .env
 *.db
+quota_state.json
 __pycache__/
 static/media/*
 !static/media/.gitkeep

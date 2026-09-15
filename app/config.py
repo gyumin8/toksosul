@@ -53,6 +53,16 @@ IMAGE_PROVIDER = _resolve_image_provider()
 # -> 키 발급 전에도 팀원 전원이 전체 플로우를 돌려볼 수 있다.
 USE_MOCK_AI = not GEMINI_API_KEY
 
+# ---------------------------------------------------------------- 무료 할당량 보호
+# 데모 당일 할당량 소진으로 전체가 막히는 걸 막기 위한 벤더별 일일 호출 한도.
+# 0이면 한도 없음(카운트만 하고 막지 않음). 각 벤더 대시보드에서 실제 무료 한도를
+# 확인한 뒤, 안전 마진(예: 실제 한도의 80~90%)을 두고 채워 넣는다.
+#   Gemini: https://aistudio.google.com/usage
+#   Cloudflare: 대시보드 > Workers AI > Usage
+GEMINI_TEXT_DAILY_LIMIT = int(os.getenv("GEMINI_TEXT_DAILY_LIMIT", "0"))
+GEMINI_IMAGE_DAILY_LIMIT = int(os.getenv("GEMINI_IMAGE_DAILY_LIMIT", "0"))
+CF_IMAGE_DAILY_LIMIT = int(os.getenv("CF_IMAGE_DAILY_LIMIT", "0"))
+
 # ---------------------------------------------------------------- DB
 DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{BASE_DIR / 'toksosul.db'}")
 

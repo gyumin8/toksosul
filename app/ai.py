@@ -18,14 +18,19 @@ import io
 import json
 import random
 import re
+import time
 import urllib.error
 import urllib.request
 import uuid
 
+from google.genai import errors as genai_errors
+
+from . import quota
 from .config import (
-    CF_ACCOUNT_ID, CF_API_TOKEN, CF_IMAGE_MODEL, ENABLE_IMAGE_GEN,
-    GEMINI_API_KEY, GEMINI_IMAGE_MODEL, GEMINI_TEXT_MODEL,
-    IMAGE_PROVIDER, MEDIA_DIR, USE_MOCK_AI, WRAP_UP_FROM_REMAINING_ROUNDS,
+    CF_ACCOUNT_ID, CF_API_TOKEN, CF_IMAGE_DAILY_LIMIT, CF_IMAGE_MODEL,
+    ENABLE_IMAGE_GEN, GEMINI_API_KEY, GEMINI_IMAGE_DAILY_LIMIT, GEMINI_IMAGE_MODEL,
+    GEMINI_TEXT_DAILY_LIMIT, GEMINI_TEXT_MODEL, IMAGE_PROVIDER, MEDIA_DIR,
+    USE_MOCK_AI, WRAP_UP_FROM_REMAINING_ROUNDS,
 )
 
 _client = None
@@ -36,24 +41,98 @@ def _get_client():
     global _client
     if _client is None:
         from google import genai
-        _client = genai.Client(api_key=GEMINI_API_KEY)
+        from google.genai import types as genai_types
+        # SDK가 interactions.create()에서 408/409/429/5xx를 자체적으로 최대 5회,
+        # 지수 백오프로 최대 60초까지 재시도한다. 그대로 두면 진짜 429가 났을 때
+        # 우리 코드가 예외를 보기도 전에 SDK 안에서 수십 초가 날아가 버려서,
+        # 아래 _call_with_retry()가 약속하는 "총합 5초"가 무의미해진다. 그래서
+        # SDK 자체 재시도는 여기서 끄고(attempts=1 = 재시도 없음), 재시도 시점·
+        # 횟수·시간을 전부 우리 쪽(_call_with_retry)이 통제한다.
+        _client = genai.Client(
+            api_key=GEMINI_API_KEY,
+            http_options=genai_types.HttpOptions(
+                retry_options=genai_types.HttpRetryOptions(attempts=1),
+            ),
+        )
     return _client
+
+
+# ------------------------------------------------------------------ 순간적인 429 재시도
+# quota.py(오늘 한도 다 씀)와는 다른 문제다. 이건 "순간적으로 요청이 몰려 잠깐
+# 거부됨"에 대한 재시도이므로, 짧게 몇 번만 시도하고 quota 카운터는 건드리지 않는다.
+_RETRY_MAX_ATTEMPTS = 3          # 최초 시도 1회 + 재시도 최대 2회
+_RETRY_BASE_DELAYS = (1.0, 2.0)  # 1차 재시도 전 1초, 2차 재시도 전 2초
+_RETRY_JITTER_MAX = 0.3          # 대기 시간에 0~0.3초 무작위로 더한다
+_RETRY_TOTAL_BUDGET = 5.0        # 재시도 대기 시간 총합 상한(초). 초과분은 잘라낸다
+
+
+def _is_rate_limited(exc: BaseException) -> bool:
+    """429 / RESOURCE_EXHAUSTED로 명확히 식별되는 에러에만 True를 준다.
+
+    그 외 에러(400 INVALID_ARGUMENT 같은 잘못된 요청, 네트워크 오류 등)는 재시도
+    해도 똑같이 실패할 뿐이므로 여기서 걸러내 즉시 상위 폴백으로 넘긴다."""
+    if isinstance(exc, urllib.error.HTTPError):
+        return exc.code == 429
+    if isinstance(exc, genai_errors.APIError):
+        return exc.code == 429 or exc.status == "RESOURCE_EXHAUSTED"
+    return False
+
+
+def _call_with_retry(fn, label: str):
+    """짧은 지수 백오프(1초→2초 + 지터)로 최대 2회만 재시도한다.
+
+    429가 아닌 에러는 즉시 그대로 올려 재시도 없이 폴백으로 보낸다. 대기 시간
+    총합은 _RETRY_TOTAL_BUDGET을 넘지 않게 잘라낸다 — 턴 제출처럼 동기 경로에
+    물려 있는 호출(continue_story)이 재시도 때문에 너무 오래 걸리지 않게 하기
+    위함이다.
+    """
+    remaining_budget = _RETRY_TOTAL_BUDGET
+    for attempt in range(1, _RETRY_MAX_ATTEMPTS + 1):
+        try:
+            return fn()
+        except Exception as e:
+            if not _is_rate_limited(e):
+                raise  # 429가 아니면 재시도하지 않는다
+            if attempt == _RETRY_MAX_ATTEMPTS:
+                raise  # 재시도 소진 — 상위 폴백에 맡긴다
+            delay = min(_RETRY_BASE_DELAYS[attempt - 1] + random.uniform(0, _RETRY_JITTER_MAX),
+                        remaining_budget)
+            remaining_budget -= delay
+            print(f"[ai:retry] {label} 429(요청 몰림), {attempt}번째 재시도 전 {delay:.1f}초 대기")
+            if delay > 0:
+                time.sleep(delay)
 
 
 # ------------------------------------------------------------------ 저수준 호출
 def _generate_text(prompt: str) -> str:
-    """Gemini에 텍스트를 요청하고 문자열을 돌려준다."""
+    """Gemini에 텍스트를 요청하고 문자열을 돌려준다.
+
+    호출 직전에 일일 한도(GEMINI_TEXT_DAILY_LIMIT)를 확인한다. 한도에 도달했으면
+    실제 벤더에 요청을 보내지 않고 quota.QuotaExceeded를 던진다 — 어차피 거절당할
+    호출로 시간을 쓰지 않기 위함이다. 호출부(continue_story 등)가 이 예외를 잡아
+    폴백으로 넘어간다. 429(순간적으로 몰림)는 이것과 별개로 _call_with_retry가
+    짧게 재시도한다.
+    """
+    quota.check("gemini_text", GEMINI_TEXT_DAILY_LIMIT, "Gemini 텍스트")
     client = _get_client()
 
     # 신형 Interactions API 우선
     if hasattr(client, "interactions"):
-        interaction = client.interactions.create(model=GEMINI_TEXT_MODEL, input=prompt)
+        def _call():
+            quota.increment("gemini_text")
+            return client.interactions.create(model=GEMINI_TEXT_MODEL, input=prompt)
+
+        interaction = _call_with_retry(_call, "Gemini 텍스트")
         text = getattr(interaction, "output_text", None)
         if text:
             return text.strip()
 
-    # 구형 SDK 폴백
-    resp = client.models.generate_content(model=GEMINI_TEXT_MODEL, contents=prompt)
+    # 구형 SDK 폴백 (또는 신형 API가 빈 응답을 준 경우)
+    def _legacy_call():
+        quota.increment("gemini_text")
+        return client.models.generate_content(model=GEMINI_TEXT_MODEL, contents=prompt)
+
+    resp = _call_with_retry(_legacy_call, "Gemini 텍스트(구형)")
     return (resp.text or "").strip()
 
 
@@ -112,11 +191,12 @@ def _image_cloudflare(prompt: str) -> str | None:
 
     requests 대신 표준 라이브러리 urllib를 쓴다. 의존성을 늘리지 않기 위함이다.
     """
+    quota.check("cloudflare_image", CF_IMAGE_DAILY_LIMIT, "Cloudflare 이미지")
+
     url = (f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}"
            f"/ai/run/{CF_IMAGE_MODEL}")
     # 프롬프트 상한이 2048자다. 넘치면 요청 자체가 거절되므로 미리 자른다.
     body = json.dumps({"prompt": prompt[:2040], "steps": 4}).encode("utf-8")
-
     req = urllib.request.Request(
         url,
         data=body,
@@ -126,8 +206,13 @@ def _image_cloudflare(prompt: str) -> str | None:
         },
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=90) as resp:
-        payload = json.loads(resp.read().decode("utf-8"))
+
+    def _call():
+        quota.increment("cloudflare_image")
+        with urllib.request.urlopen(req, timeout=90) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+
+    payload = _call_with_retry(_call, "Cloudflare 이미지")
 
     if not payload.get("success"):
         raise RuntimeError(f"Cloudflare 응답 실패: {payload.get('errors')}")
@@ -144,12 +229,18 @@ def _image_gemini(prompt: str) -> str | None:
     if not hasattr(client, "interactions"):
         return None
 
-    interaction = client.interactions.create(
-        model=GEMINI_IMAGE_MODEL,
-        input=prompt,
-        # image/png는 400을 낸다. 이 API는 image/jpeg만 지원한다.
-        response_format={"type": "image", "mime_type": "image/jpeg", "aspect_ratio": "16:9"},
-    )
+    quota.check("gemini_image", GEMINI_IMAGE_DAILY_LIMIT, "Gemini 이미지")
+
+    def _call():
+        quota.increment("gemini_image")
+        return client.interactions.create(
+            model=GEMINI_IMAGE_MODEL,
+            input=prompt,
+            # image/png는 400을 낸다. 이 API는 image/jpeg만 지원한다.
+            response_format={"type": "image", "mime_type": "image/jpeg", "aspect_ratio": "16:9"},
+        )
+
+    interaction = _call_with_retry(_call, "Gemini 이미지")
     image = getattr(interaction, "output_image", None)
     if not image or not getattr(image, "data", None):
         return None
@@ -189,6 +280,16 @@ def _generate_image(prompt: str) -> str | None:
 
 def _image_model_name() -> str:
     return {"cloudflare": CF_IMAGE_MODEL, "gemini": GEMINI_IMAGE_MODEL}.get(IMAGE_PROVIDER, "-")
+
+
+def quota_status() -> dict:
+    """오늘 날짜 기준 벤더별 호출 수/한도 스냅샷. /api/quota가 그대로 내려준다.
+    AI를 실제로 호출하지 않으므로 데모 중에 자주 폴링해도 할당량을 쓰지 않는다."""
+    return quota.status({
+        "gemini_text": GEMINI_TEXT_DAILY_LIMIT,
+        "gemini_image": GEMINI_IMAGE_DAILY_LIMIT,
+        "cloudflare_image": CF_IMAGE_DAILY_LIMIT,
+    })
 
 
 def ping(test_image: bool = False) -> dict:
@@ -303,13 +404,23 @@ def continue_story(genre: str, context: str, user_line: str, writer: str,
                     "[목 응답: GEMINI_API_KEY를 설정하면 실제 생성됩니다]",
         }
 
-    raw = _generate_text(
-        f"{STYLE_RULES}{_wrap_up_note(remaining_rounds)}\n\n"
-        f"장르: {genre}\n\n"
-        f"[지금까지의 이야기]\n{context}\n\n"
-        f"[{writer}가 방금 던진 한 줄]\n{user_line}\n\n"
-        "위 한 줄을 다듬고, 그 사건을 실제로 일어나게 해서 본문을 이어라."
-    )
+    try:
+        raw = _generate_text(
+            f"{STYLE_RULES}{_wrap_up_note(remaining_rounds)}\n\n"
+            f"장르: {genre}\n\n"
+            f"[지금까지의 이야기]\n{context}\n\n"
+            f"[{writer}가 방금 던진 한 줄]\n{user_line}\n\n"
+            "위 한 줄을 다듬고, 그 사건을 실제로 일어나게 해서 본문을 이어라."
+        )
+    except Exception as e:
+        # 삽화 생성과 같은 원칙: AI 호출 실패(할당량 소진 포함)가 턴 제출 자체를
+        # 막으면 안 된다. 다듬기 없이 원문을 그대로 쓰고, 짧은 연결 문장으로 이어
+        # 다음 사람이 계속 쓸 수 있게 한다. 조용히 넘어가지 않고 로그를 남긴다.
+        print(f"[ai:continue] 텍스트 생성 실패, 이어쓰기 없이 진행: {type(e).__name__}: {e}")
+        return {
+            "polished_line": user_line[:200],
+            "text": "（이어지는 장면이 잠시 흐려졌다. 다음 사람이 이어서 써 주세요.）",
+        }
 
     polished = _extract_tag(raw, "다듬은줄") or user_line
     text = _extract_tag(raw, "본문")
