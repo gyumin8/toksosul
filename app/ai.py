@@ -146,12 +146,13 @@ def _image_gemini(prompt: str) -> str | None:
     interaction = client.interactions.create(
         model=GEMINI_IMAGE_MODEL,
         input=prompt,
-        response_format={"type": "image", "mime_type": "image/png", "aspect_ratio": "16:9"},
+        # image/png는 400을 낸다. 이 API는 image/jpeg만 지원한다.
+        response_format={"type": "image", "mime_type": "image/jpeg", "aspect_ratio": "16:9"},
     )
     image = getattr(interaction, "output_image", None)
     if not image or not getattr(image, "data", None):
         return None
-    return _save_image(image.data, "png")
+    return _save_image(image.data, "jpg")
 
 
 def _generate_image(prompt: str) -> str | None:
