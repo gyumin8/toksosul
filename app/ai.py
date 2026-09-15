@@ -547,6 +547,46 @@ def _build_image_prompt(scene: str, cast: list[str], sheet: dict) -> str:
     return " ".join(parts)
 
 
+# 조사가 붙은 이름(규민이/서연을/규민과 등)이 character_sheet 키와 정확히
+# 일치하지 않아 매칭에 실패하는 걸 막는다. 긴 조사부터 검사해야 "은/는" 같은
+# 짧은 조사가 먼저 걸려 이름을 잘못 잘라내는 걸 피할 수 있다.
+_KOREAN_PARTICLES = (
+    "께서는", "에게서", "이라서", "라서", "에게", "한테", "에서", "으로",
+    "로는", "이나", "이랑", "랑", "와", "과", "은", "는", "이", "가",
+    "을", "를", "의", "도", "만", "에", "로",
+)
+
+
+def _strip_particle(name: str) -> str:
+    for p in _KOREAN_PARTICLES:
+        if len(name) > len(p) and name.endswith(p):
+            return name[: -len(p)]
+    return name
+
+
+def _match_known_names(candidates: list[str], sheet: dict) -> list[str]:
+    """LLM이 내놓은 cast 이름이 조사가 붙거나 표기가 살짝 달라도 이미 정해진
+    인물(character_sheet)과 매칭되게 한다.
+
+    정확히 일치 -> 조사 제거 후 일치 -> sheet 키가 이름 문자열에 부분 포함되는
+    경우 순으로 시도한다. 아무것도 안 맞으면 새 인물로 보고 원본 문자열을
+    그대로 둔다 (뒤에서 새 인물로 등록되는 기존 흐름과 호환).
+    """
+    matched = []
+    for raw in candidates:
+        name = raw.strip()
+        if name in sheet:
+            matched.append(name)
+            continue
+        stripped = _strip_particle(name)
+        if stripped in sheet:
+            matched.append(stripped)
+            continue
+        hit = next((k for k in sheet if k and k in name), None)
+        matched.append(hit or name)
+    return matched
+
+
 def generate_round_art(genre: str, context: str, round_number: int,
                        character_sheet: dict | None = None) -> dict:
     """한 바퀴가 끝날 때마다 그 바퀴 분량의 삽화를 생성한다.
@@ -590,12 +630,20 @@ def generate_round_art(genre: str, context: str, round_number: int,
 
     if meta:
         scene = str(meta.get("scene") or "")
-        cast = [str(x) for x in (meta.get("cast") or []) if x]
+        raw_cast = [str(x) for x in (meta.get("cast") or []) if x]
         caption = str(meta.get("caption") or caption)[:40]
         for name, desc in (meta.get("characters") or {}).items():
             # 이미 있는 인물은 덮어쓰지 않는다. 외모가 바뀌면 일관성이 깨지므로.
             if name not in sheet and desc:
                 sheet[name] = str(desc)
+
+        # 조사가 붙거나 표기가 살짝 다른 이름이 기존 인물과 매칭되지 않으면
+        # 그 인물은 고정 외모 없이 그려져 매번 딴사람처럼 나온다. cast 목록을
+        # sheet 키에 맞춰 정규화하고, LLM이 cast에 넣는 걸 깜빡했더라도 최근
+        # 맥락에 이름이 그대로 언급된 기존 인물이면 강제로 포함시킨다.
+        context_tail = context[-2000:]
+        mentioned = [name for name in sheet if name and name in context_tail]
+        cast = list(dict.fromkeys(_match_known_names(raw_cast, sheet) + mentioned))
 
     if not scene:
         # 1단계가 실패해도 그림은 나오게 한다. 장면 없는 분위기 컷으로 대체.
