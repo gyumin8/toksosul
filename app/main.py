@@ -13,7 +13,7 @@ from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 
-from . import ai
+from . import ai, metrics
 from . import turn_logic as tl
 from .config import (
     BASE_DIR, DEFAULT_INACTIVITY_HOURS, ENABLE_IMAGE_GEN, HARD_MAX_ROUNDS,
@@ -64,6 +64,13 @@ def ai_check(image: int = 0):
 def get_quota():
     """벤더별 오늘 호출 수/한도. AI를 호출하지 않으므로 데모 중 계속 열어둬도 된다."""
     return ai.quota_status()
+
+
+@app.get("/api/metrics")
+def get_metrics():
+    """성공률/NSFW 오탐률/재시도 횟수 등 정량 지표 집계. metrics.jsonl을 다시
+    읽기만 하므로 AI를 호출하지 않는다. 발표 자료용 숫자를 뽑을 때 쓴다."""
+    return metrics.summarize()
 
 
 # ------------------------------------------------------------------ 유저

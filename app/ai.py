@@ -25,7 +25,7 @@ import uuid
 
 from google.genai import errors as genai_errors
 
-from . import quota
+from . import metrics, quota
 from .config import (
     CF_ACCOUNT_ID, CF_API_TOKEN, CF_IMAGE_DAILY_LIMIT, CF_IMAGE_MODEL,
     ENABLE_IMAGE_GEN, GEMINI_API_KEY, GEMINI_IMAGE_DAILY_LIMIT, GEMINI_IMAGE_MODEL,
@@ -112,6 +112,8 @@ def _call_with_retry(fn, label: str):
                         remaining_budget)
             remaining_budget -= delay
             print(f"[ai:retry] {label} 429(요청 몰림), {attempt}번째 재시도 전 {delay:.1f}초 대기")
+            metrics.log_event("rate_limit_retry", vendor=label, attempt=attempt,
+                               delay_s=round(delay, 2))
             if delay > 0:
                 time.sleep(delay)
 
@@ -282,9 +284,11 @@ def _generate_image(prompt: str) -> str | None:
             try:
                 url = _image_gemini(prompt)
                 print(f"[art] Gemini 재시도 {'성공' if url else '실패(응답에 이미지 없음)'}")
+                metrics.log_event("nsfw_false_positive", recovered=bool(url))
                 return url
             except Exception as e2:
                 print(f"[art] Gemini 재시도 실패: {type(e2).__name__}: {e2}")
+                metrics.log_event("nsfw_false_positive", recovered=False)
                 return None
     if IMAGE_PROVIDER == "gemini":
         return _image_gemini(prompt)
@@ -430,6 +434,7 @@ def continue_story(genre: str, context: str, user_line: str, writer: str,
         # 막으면 안 된다. 다듬기 없이 원문을 그대로 쓰고, 짧은 연결 문장으로 이어
         # 다음 사람이 계속 쓸 수 있게 한다. 조용히 넘어가지 않고 로그를 남긴다.
         print(f"[ai:continue] 텍스트 생성 실패, 이어쓰기 없이 진행: {type(e).__name__}: {e}")
+        metrics.log_event("text_generate", outcome="fallback", reason=type(e).__name__)
         return {
             "polished_line": user_line[:200],
             "text": "（이어지는 장면이 잠시 흐려졌다. 다음 사람이 이어서 써 주세요.）",
@@ -442,6 +447,7 @@ def continue_story(genre: str, context: str, user_line: str, writer: str,
         print(f"[ai:continue] 출력 형식 위반. 응답 앞부분: {raw[:120]!r}")
         text = re.sub(r"\[[^\]]{1,10}\]", "", raw).strip()
 
+    metrics.log_event("text_generate", outcome="success")
     return {"polished_line": polished.strip()[:200], "text": text.strip()}
 
 
@@ -657,13 +663,21 @@ def generate_round_art(genre: str, context: str, round_number: int,
     except urllib.error.HTTPError as e:
         body = e.read().decode("utf-8", "replace")[:200]
         print(f"[art] {round_number}바퀴 이미지 생성 실패 (HTTP {e.code}): {body}")
+        metrics.log_event("image_generate", vendor=IMAGE_PROVIDER, outcome="placeholder",
+                           reason=f"HTTP {e.code}", round=round_number)
         return {**fallback, "character_sheet": sheet}
     except Exception as e:
         print(f"[art] {round_number}바퀴 이미지 생성 실패: {type(e).__name__}: {e}")
+        metrics.log_event("image_generate", vendor=IMAGE_PROVIDER, outcome="placeholder",
+                           reason=type(e).__name__, round=round_number)
         return {**fallback, "character_sheet": sheet}
 
     if not url:
         print(f"[art] {round_number}바퀴 응답에 이미지가 없습니다.")
+        metrics.log_event("image_generate", vendor=IMAGE_PROVIDER, outcome="placeholder",
+                           reason="empty_response", round=round_number)
         return {**fallback, "character_sheet": sheet}
 
+    metrics.log_event("image_generate", vendor=IMAGE_PROVIDER, outcome="success",
+                       round=round_number)
     return {"image_url": url, "caption": caption, "character_sheet": sheet}
