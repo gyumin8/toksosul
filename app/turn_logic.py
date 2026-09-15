@@ -75,11 +75,22 @@ def written_turn_count(story: Story) -> int:
     return sum(1 for t in story.turns if not t.is_skipped)
 
 
+def load_threads(story: Story) -> list[str]:
+    """미해결 떡밥 목록(스토리 바이블)을 읽는다. 비어 있거나 깨졌으면 빈 리스트."""
+    if not story.plot_threads:
+        return []
+    try:
+        data = json.loads(story.plot_threads)
+        return [str(t) for t in data] if isinstance(data, list) else []
+    except json.JSONDecodeError:
+        return []
+
+
 # ------------------------------------------------------------------ 완결 처리
 def finalize(db: Session, story: Story, status: str, reason: str) -> None:
     """공통 완결 처리: 에필로그 + 표지 생성 후 상태를 닫는다."""
     context = ai.build_context(history_dicts(db, story))
-    result = ai.write_epilogue(story.genre, context, reason)
+    result = ai.write_epilogue(story.genre, context, reason, load_threads(story))
 
     story.title = result["title"]
     story.epilogue = result["epilogue"]
@@ -122,6 +133,10 @@ def _on_round_complete(db: Session, story: Story, finished_round: int) -> None:
         # 새로 등장한 인물의 외모 묘사를 누적 저장한다. 다음 바퀴 삽화에서 재사용된다.
         if art.get("character_sheet"):
             story.character_sheet = json.dumps(art["character_sheet"], ensure_ascii=False)
+
+    # 미해결 떡밥 목록(스토리 바이블) 갱신. 이미지 생성 여부와 무관하게 매 바퀴 돈다.
+    threads = ai.update_plot_threads(story.genre, context, load_threads(story))
+    story.plot_threads = json.dumps(threads, ensure_ascii=False)
 
     # 완결 추천: 초반 바퀴는 물어봐도 의미가 없어서 건너뛴다.
     if finished_round >= END_SUGGESTION_FROM_ROUND:

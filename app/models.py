@@ -101,6 +101,11 @@ class Story(Base):
     end_suggestion: Mapped[str | None] = mapped_column(Text, nullable=True)
     end_suggestion_round: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
+    # 미해결 떡밥 목록(스토리 바이블). ["...", "..."] 형태의 JSON.
+    # build_context()가 최근 턴만 넘기므로, 초반 떡밥이 나중 바퀴에서 컨텍스트 밖으로
+    # 밀려나도 여기서 누적 추적해 에필로그가 회수할 수 있게 한다.
+    plot_threads: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 

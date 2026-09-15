@@ -2,8 +2,8 @@
 app/ai.py
 AI 호출을 전부 이 파일 안에 가둔다. (기획안 6-1 "AI 개입 방식은 교체 가능하게" 원칙)
 
-바깥에서는 continue_story / suggest_ending / write_epilogue / generate_round_art
-네 함수만 쓴다. 벤더나 모델을 바꿔도 이 파일만 고치면 된다.
+바깥에서는 continue_story / suggest_ending / write_epilogue / generate_round_art /
+update_plot_threads 다섯 함수만 쓴다. 벤더나 모델을 바꿔도 이 파일만 고치면 된다.
 
 벤더: Google Gemini (google-genai SDK)
  - 텍스트/이미지 모두 client.interactions.create() 로 호출한다.
@@ -318,8 +318,14 @@ def suggest_ending(genre: str, context: str, round_number: int, max_rounds: int)
     return {"should_end": bool(data.get("should_end")), "reason": str(data.get("reason", ""))}
 
 
-def write_epilogue(genre: str, context: str, reason: str) -> dict:
-    """완결 처리 시 마지막 단락과 제목을 생성한다."""
+def write_epilogue(genre: str, context: str, reason: str,
+                    open_threads: list[str] | None = None) -> dict:
+    """완결 처리 시 마지막 단락과 제목을 생성한다.
+
+    open_threads: update_plot_threads()가 누적 추적해온 미해결 떡밥 목록.
+    context는 최근 일부 턴만 담고 있어 초반 떡밥이 빠져 있을 수 있으므로, 따로 넘겨서
+    에필로그가 회수하도록 한다.
+    """
     if USE_MOCK_AI:
         return {
             "title": random.choice(["그날의 우리", "끝나지 않은 방", "마지막 한 줄"]),
@@ -327,17 +333,51 @@ def write_epilogue(genre: str, context: str, reason: str) -> dict:
                         "다만 각자의 자리에서, 가끔씩 그 문장을 떠올렸을 뿐이다. [목 응답]",
         }
 
+    threads_note = ""
+    if open_threads:
+        listed = "\n".join(f"- {t}" for t in open_threads)
+        threads_note = f"\n\n[아직 해소되지 않은 떡밥] 가능한 한 이 안에서 자연스럽게 회수해라.\n{listed}"
+
     data = _generate_json(
         "너는 소설의 마지막 단락을 쓰는 작가다. 지금까지의 내용을 바탕으로 여운 있게 이야기를 닫아라.\n"
         "새 인물이나 새 설정을 등장시키지 않는다.\n"
         '반드시 {"title": "제목 20자 이내", "epilogue": "마지막 단락 400자 이내"} '
-        "형식의 JSON만 출력한다. 다른 말은 쓰지 않는다.\n\n"
+        f"형식의 JSON만 출력한다. 다른 말은 쓰지 않는다.{threads_note}\n\n"
         f"장르: {genre}\n완결 사유: {reason}\n\n{context}"
     )
     return {
         "title": str(data.get("title") or "제목 없는 이야기")[:120],
         "epilogue": str(data.get("epilogue") or ""),
     }
+
+
+def update_plot_threads(genre: str, context: str, open_threads: list[str]) -> list[str]:
+    """추적 중인 미해결 떡밥 목록을 최근 전개를 반영해 갱신한다.
+
+    build_context()가 최근 일부 턴만 넘기므로, 초반에 등장한 떡밥이 나중 바퀴에서
+    컨텍스트 밖으로 밀려나도 여기서 누적 보관해 write_epilogue가 회수할 수 있게 한다.
+    실패하면 기존 목록을 그대로 돌려준다. (턴 진행을 막지 않기 위함)
+    """
+    if USE_MOCK_AI:
+        return open_threads
+
+    known = "\n".join(f"- {t}" for t in open_threads) or "(아직 없음)"
+    data = _generate_json(
+        "너는 이 소설의 복선을 추적하는 편집자다. 추적 중이던 미해결 떡밥 목록을 "
+        "최근 전개를 반영해 갱신해라.\n"
+        "- 최근 전개에서 이미 해소된 떡밥은 목록에서 뺀다.\n"
+        "- 아직 해소되지 않은 기존 떡밥은 문구를 바꾸지 말고 그대로 남긴다.\n"
+        "- 최근 전개에서 새로 생긴, 나중에 회수될 법한 떡밥이 있으면 한국어로 짧게 추가한다.\n"
+        "- 사소한 디테일 말고 나중에 갚아야 할 약속(비밀, 목표, 갈등)만 담는다.\n"
+        f"[추적 중인 떡밥]\n{known}\n\n"
+        '{"threads": ["...", "..."]} 형식의 JSON만 출력한다. 다른 말은 쓰지 않는다.\n\n'
+        f"장르: {genre}\n\n{context}",
+        label="threads",
+    )
+    threads = data.get("threads")
+    if not isinstance(threads, list):
+        return open_threads
+    return [str(t).strip()[:120] for t in threads if str(t).strip()][:20]
 
 
 # 모든 삽화에 똑같이 붙는 화풍. 20장이 한 권처럼 보이게 하는 장치다.
