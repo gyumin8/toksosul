@@ -8,7 +8,7 @@ import random
 import string
 from datetime import timedelta
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException
 from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
@@ -156,9 +156,22 @@ def get_room(room_id: str, db: Session = Depends(get_db)):
     return _room_payload(db, room)
 
 
+def _schedule_pending_round_work(story: Story, background_tasks: BackgroundTasks) -> None:
+    """바퀴 완성 후처리(삽화/떡밥추적/완결추천, 필요시 에필로그)가 예약돼 있으면
+    백그라운드로 스케줄한다. tl._advance()가 세팅해둔 art_pending_round를 본다.
+
+    조회(GET) 폴링마다 이 함수가 반복 호출되므로, claim_round_for_background()로
+    이미 처리 중인 바퀴는 다시 스케줄하지 않는다 (안 그러면 같은 바퀴를 여러 백그라운드
+    작업이 동시에 만들려고 경합해 DB 유니크 제약 위반이 난다)."""
+    round_number = story.art_pending_round
+    if round_number is not None and tl.claim_round_for_background(story.id, round_number):
+        background_tasks.add_task(tl.run_round_completion, story.id, round_number)
+
+
 # ------------------------------------------------------------------ 소설
 @app.post("/api/rooms/{room_id}/start")
-def start_story(room_id: str, body: StoryStart, db: Session = Depends(get_db)):
+def start_story(room_id: str, body: StoryStart, background_tasks: BackgroundTasks,
+                 db: Session = Depends(get_db)):
     room = db.get(Room, room_id)
     if not room:
         raise HTTPException(404, "방을 찾을 수 없습니다.")
@@ -192,6 +205,7 @@ def start_story(room_id: str, body: StoryStart, db: Session = Depends(get_db)):
         except tl.TurnError as e:
             raise HTTPException(400, str(e))
         db.refresh(story)
+        _schedule_pending_round_work(story, background_tasks)
 
     return _story_payload(db, story)
 
@@ -213,7 +227,9 @@ def _story_payload(db: Session, story: Story) -> dict:
         "title": story.title,
         "genre": story.genre,
         "status": story.status,
-        "is_finished": story.status != "in_progress",
+        # "finishing"은 마지막 바퀴 후처리(에필로그/표지)가 아직 끝나기 전이라 완결로 안 친다.
+        "is_finished": story.status not in ("in_progress", "finishing"),
+        "art_pending_round": story.art_pending_round,
         "member_count": story.member_count,
         "members": [
             {"member_id": m.id, "user_id": m.user_id,
@@ -251,17 +267,19 @@ def _story_payload(db: Session, story: Story) -> dict:
 
 
 @app.get("/api/stories/{story_id}")
-def get_story(story_id: str, db: Session = Depends(get_db)):
+def get_story(story_id: str, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     story = db.get(Story, story_id)
     if not story:
         raise HTTPException(404, "이야기를 찾을 수 없습니다.")
-    tl.sync_deadline(db, story)  # 조회할 때마다 마감 지난 턴을 정리한다
+    tl.sync_deadline(db, story)  # 조회할 때마다 마감 지난 턴을 정리한다 (바퀴가 완성될 수도 있다)
     db.refresh(story)
+    _schedule_pending_round_work(story, background_tasks)
     return _story_payload(db, story)
 
 
 @app.post("/api/stories/{story_id}/turns")
-def post_turn(story_id: str, body: TurnSubmit, db: Session = Depends(get_db)):
+def post_turn(story_id: str, body: TurnSubmit, background_tasks: BackgroundTasks,
+              db: Session = Depends(get_db)):
     story = db.get(Story, story_id)
     if not story:
         raise HTTPException(404, "이야기를 찾을 수 없습니다.")
@@ -270,6 +288,7 @@ def post_turn(story_id: str, body: TurnSubmit, db: Session = Depends(get_db)):
     except tl.TurnError as e:
         raise HTTPException(400, str(e))
     db.refresh(story)
+    _schedule_pending_round_work(story, background_tasks)
     return _story_payload(db, story)
 
 

@@ -140,6 +140,34 @@ static/
   기존 목록 + 최근 전개를 보고 갱신본을 돌려주면 호출부가 저장하고, 완결 때
   `write_epilogue()`에 통째로 넘겨 회수를 유도한다. 이미지 생성 여부와 무관하게
   매 바퀴 돈다 (`ENABLE_IMAGE_GEN=0`이어도 떡밥 추적은 계속돼야 하므로).
+- **바퀴 완성 후처리는 백그라운드로 뺀다.** 실측해보니 삽화 생성 + 떡밥 추적 +
+  완결 추천(+ 마지막 바퀴는 에필로그까지)이 한 턴 제출 안에서 순차 실행되면
+  15~25초가 걸렸다. `continue_story`(본인 턴 응답)만 동기로 즉시 반환하고, 나머지는
+  `stories.art_pending_round`에 처리 중인 바퀴 번호만 표시해둔 뒤 FastAPI
+  `BackgroundTasks`로 넘긴다(`turn_logic.run_round_completion`). 백그라운드 작업은
+  요청 세션이 응답과 함께 닫히므로 자체 `SessionLocal()`을 새로 연다. 프론트는
+  `art_pending_round`를 보고 "생성 중" 표시 후 폴링하면 된다.
+  마지막 바퀴는 `stories.status`가 `finishing`(전이 상태)을 거쳐 완결 상태로
+  넘어간다 — 표지가 마지막 바퀴 삽화를 재사용하는 로직과 순서가 꼬이지 않으려면
+  (그 삽화 자체가 아직 백그라운드에서 생성 중일 수 있으므로) 에필로그+표지 생성도
+  같은 배경 작업 안에서 처리해야 하기 때문. 예외가 나도 `art_pending_round`는
+  반드시 풀리고, `finishing` 중 에필로그 생성이 실패하면 `in_progress`로 되돌려
+  게임이 영구히 막히지 않게 한다.
+- **Cloudflare NSFW 오탐은 Gemini로 1회만 재시도한다.** 실사용 중 평범한 장면이
+  NSFW로 오탐 거부되는 걸 실측으로 확인했다. `_generate_image()`가 Cloudflare의
+  HTTPError 본문에서 `nsfw`를 감지하면 같은 프롬프트로 Gemini에 딱 한 번만
+  재시도하고(재귀 없음, 무한 재시도 방지), 그래도 안 되면 기존처럼 플레이스홀더로
+  폴백한다. 본문을 재시도 판단에 쓰려고 한 번 읽고 나면 스트림이 소진되므로,
+  다른 호출부(`generate_round_art` 로그, `ping()` 진단)가 다시 읽을 수 있게
+  `e.fp`를 새 `BytesIO`로 되돌려놓는다.
+
+> **프론트 담당자께**: 백그라운드 처리 도입으로 `stories.status`에 `finishing`
+> (완결 직전, 에필로그 생성 중) 상태가 새로 생겼습니다. 이 구간에서
+> `current_user_id`/`current_nickname`이 `null`이 되는데, `app.js`가 이 값을
+> 널 체크 없이 문자열에 바로 끼워 넣는 곳이 있어서(`turnWho`, `composerLocked`)
+> 짧게 "null 님 차례"처럼 보일 수 있습니다. 완결 화면 쪽 코드라 제가 직접 고치지
+> 않았어요 — `is_finished`(정말 완결)와 `status === "finishing"`(완결 처리 중)을
+> 구분해서 "완결 처리 중..." 같은 문구로 보여주면 됩니다.
 
 ## 남은 작업
 

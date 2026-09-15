@@ -81,7 +81,8 @@ class Story(Base):
     title: Mapped[str] = mapped_column(String(120), default="제목 없는 이야기")
     genre: Mapped[str] = mapped_column(String(40), default="자유")
 
-    # in_progress / completed_forced / completed_host / completed_llm
+    # in_progress / finishing(마지막 바퀴 완결 후처리 중) /
+    # completed_forced / completed_host / completed_llm
     status: Mapped[str] = mapped_column(String(24), default="in_progress")
 
     # 전역 턴 카운터. 현재 차례 = members[turn_index % member_count]
@@ -105,6 +106,10 @@ class Story(Base):
     # build_context()가 최근 턴만 넘기므로, 초반 떡밥이 나중 바퀴에서 컨텍스트 밖으로
     # 밀려나도 여기서 누적 추적해 에필로그가 회수할 수 있게 한다.
     plot_threads: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # 백그라운드로 후처리(삽화/떡밥추적/완결추천/에필로그) 중인 바퀴 번호.
+    # None이면 후처리할 게 없는 상태. 프론트가 이 값을 보고 "생성 중" 표시 + 폴링.
+    art_pending_round: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

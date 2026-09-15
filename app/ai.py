@@ -14,6 +14,7 @@ update_plot_threads 다섯 함수만 쓴다. 벤더나 모델을 바꿔도 이 �
 GEMINI_API_KEY가 없으면 자동으로 목 응답을 돌려준다. 키 없이도 전체 플로우 테스트 가능.
 """
 import base64
+import io
 import json
 import random
 import re
@@ -156,9 +157,31 @@ def _image_gemini(prompt: str) -> str | None:
 
 
 def _generate_image(prompt: str) -> str | None:
-    """설정된 벤더로 이미지를 생성한다. 실패하면 None."""
+    """설정된 벤더로 이미지를 생성한다. 실패하면 None.
+
+    Cloudflare가 NSFW 오탐으로 거부하면(에러 본문에 'nsfw' 포함) 같은 프롬프트로
+    Gemini에 한 번만 재시도한다. _image_gemini를 직접 한 번 호출할 뿐 재귀적으로
+    다시 타지 않으므로 재시도는 구조적으로 1회로 고정된다. Gemini도 실패하면
+    그대로 실패시켜(None) 상위 generate_round_art가 플레이스홀더로 폴백하게 둔다.
+    """
     if IMAGE_PROVIDER == "cloudflare":
-        return _image_cloudflare(prompt)
+        try:
+            return _image_cloudflare(prompt)
+        except urllib.error.HTTPError as e:
+            body = e.read()
+            # NSFW 판정을 위해 본문을 한 번 읽었으니, 이 예외를 다시 읽을 수도 있는
+            # 호출부(generate_round_art의 로그, ping()의 진단)를 위해 스트림을 되돌려놓는다.
+            e.fp = io.BytesIO(body)
+            if b"nsfw" not in body.lower():
+                raise
+            print(f"[art] Cloudflare NSFW 오탐 감지, Gemini로 1회 재시도")
+            try:
+                url = _image_gemini(prompt)
+                print(f"[art] Gemini 재시도 {'성공' if url else '실패(응답에 이미지 없음)'}")
+                return url
+            except Exception as e2:
+                print(f"[art] Gemini 재시도 실패: {type(e2).__name__}: {e2}")
+                return None
     if IMAGE_PROVIDER == "gemini":
         return _image_gemini(prompt)
     return None
