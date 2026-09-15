@@ -70,11 +70,24 @@ def _is_rate_limited(exc: BaseException) -> bool:
     """429 / RESOURCE_EXHAUSTED로 명확히 식별되는 에러에만 True를 준다.
 
     그 외 에러(400 INVALID_ARGUMENT 같은 잘못된 요청, 네트워크 오류 등)는 재시도
-    해도 똑같이 실패할 뿐이므로 여기서 걸러내 즉시 상위 폴백으로 넘긴다."""
+    해도 똑같이 실패할 뿐이므로 여기서 걸러내 즉시 상위 폴백으로 넘긴다.
+
+    실측 결과, client.interactions.create()(우리가 실제로 쓰는 신형 API)는
+    google.genai.errors가 아니라 SDK 내부(_gaos)의 별도 예외 계층
+    (RateLimitError 등, status_code 속성을 가짐)을 던진다. 그 계층은 공개된
+    임포트 경로가 없어서 private 모듈을 직접 import하는 대신 status_code
+    속성으로 덕 타이핑한다 — 상태코드별 서브클래스가 OpenAI 호환 관례를
+    따르고 있어 이 속성 계약은 SDK 버전이 바뀌어도 잘 안 바뀐다.
+    client.models.generate_content()(구형 폴백)는 google.genai.errors.APIError
+    계열(code/status 속성)을 던지므로 그쪽도 같이 본다.
+    """
     if isinstance(exc, urllib.error.HTTPError):
         return exc.code == 429
     if isinstance(exc, genai_errors.APIError):
         return exc.code == 429 or exc.status == "RESOURCE_EXHAUSTED"
+    status_code = getattr(exc, "status_code", None)
+    if isinstance(status_code, int):
+        return status_code == 429
     return False
 
 
