@@ -214,13 +214,17 @@ def submit_turn(db: Session, story: Story, user_id: str, line: str) -> Turn:
     if len(line) > 200:
         raise TurnError("한 줄은 200자까지만 쓸 수 있습니다.")
 
+    current_round = round_of(story.turn_index, story.member_count)
+    remaining_rounds = story.room.max_rounds - current_round + 1
+
     context = ai.build_context(history_dicts(db, story))
-    result = ai.continue_story(story.genre, context, line, member.user.nickname)
+    result = ai.continue_story(story.genre, context, line, member.user.nickname,
+                               remaining_rounds)
 
     turn = Turn(
         story_id=story.id,
         turn_number=story.turn_index + 1,
-        round_number=round_of(story.turn_index, story.member_count),
+        round_number=current_round,
         member_id=member.id,
         user_line=line,                              # 사용자가 실제로 친 원문
         polished_line=result["polished_line"],       # 맞춤법/어순만 다듬은 버전

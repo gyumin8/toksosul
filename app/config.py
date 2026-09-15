@@ -68,6 +68,10 @@ DEFAULT_INACTIVITY_HOURS = 24 # 무응답 시 턴 넘김까지 대기 시간
 # LLM 완결 추천을 몇 바퀴째부터 물어볼지 (초반엔 물어봐도 의미 없어서 비용 낭비)
 END_SUGGESTION_FROM_ROUND = 3
 
+# 남은 바퀴가 이 수 이하로 들어오면 이어쓰기 프롬프트가 '정리 모드'로 바뀐다.
+# (새 떡밥을 던지지 않고 기존 전개를 회수하는 쪽으로 유도)
+WRAP_UP_FROM_REMAINING_ROUNDS = 3
+
 # 생성 이미지 저장 위치
 MEDIA_DIR = BASE_DIR / "static" / "media"
 MEDIA_DIR.mkdir(parents=True, exist_ok=True)

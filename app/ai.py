@@ -24,7 +24,7 @@ import uuid
 from .config import (
     CF_ACCOUNT_ID, CF_API_TOKEN, CF_IMAGE_MODEL, ENABLE_IMAGE_GEN,
     GEMINI_API_KEY, GEMINI_IMAGE_MODEL, GEMINI_TEXT_MODEL,
-    IMAGE_PROVIDER, MEDIA_DIR, USE_MOCK_AI,
+    IMAGE_PROVIDER, MEDIA_DIR, USE_MOCK_AI, WRAP_UP_FROM_REMAINING_ROUNDS,
 )
 
 _client = None
@@ -244,12 +244,32 @@ STYLE_RULES = """너는 친구들이 한 줄씩 던지는 상황을 받아 소�
 [본문] (이어지는 소설 본문)"""
 
 
+def _wrap_up_note(remaining_rounds: int | None) -> str:
+    """남은 바퀴가 얼마 없으면 새 떡밥 대신 기존 전개를 정리하도록 안내 문구를 만든다.
+
+    진행률 인지 프롬프트: 마지막 WRAP_UP_FROM_REMAINING_ROUNDS 바퀴 이내에서는
+    이 문구가 STYLE_RULES의 "새 사건은 최대 하나까지" 규칙 위에 덧붙어
+    회수 쪽으로 무게를 옮긴다.
+    """
+    if remaining_rounds is None or remaining_rounds > WRAP_UP_FROM_REMAINING_ROUNDS:
+        return ""
+    return (
+        f"\n\n[마무리 안내] 이제 {remaining_rounds}바퀴 남았다. "
+        "새로운 떡밥이나 인물을 새로 던지지 말고, 지금까지 나온 갈등과 복선을 "
+        "정리하고 회수하는 방향으로 이어 써라."
+    )
+
+
 # ------------------------------------------------------------------ 공개 함수
-def continue_story(genre: str, context: str, user_line: str, writer: str) -> dict:
+def continue_story(genre: str, context: str, user_line: str, writer: str,
+                    remaining_rounds: int | None = None) -> dict:
     """친구의 한 줄을 받아 {"polished_line": str, "text": str} 를 돌려준다.
 
     JSON 대신 태그 형식을 쓴다. 소설 본문에 따옴표와 줄바꿈이 섞여 있어
     JSON으로 받으면 파싱이 자주 깨지기 때문이다.
+
+    remaining_rounds: 이번 턴이 속한 바퀴부터 끝까지 남은 바퀴 수(포함).
+    None이거나 넉넉히 남았으면 평소대로, 얼마 안 남았으면 정리 모드로 바뀐다.
     """
     user_line = user_line.strip()
     if USE_MOCK_AI:
@@ -260,7 +280,7 @@ def continue_story(genre: str, context: str, user_line: str, writer: str) -> dic
         }
 
     raw = _generate_text(
-        f"{STYLE_RULES}\n\n"
+        f"{STYLE_RULES}{_wrap_up_note(remaining_rounds)}\n\n"
         f"장르: {genre}\n\n"
         f"[지금까지의 이야기]\n{context}\n\n"
         f"[{writer}가 방금 던진 한 줄]\n{user_line}\n\n"
