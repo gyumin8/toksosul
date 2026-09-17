@@ -31,6 +31,8 @@ def get_db():
 _ADDED_COLUMNS = [
     ("stories", "character_sheet", "TEXT"),
     ("turns", "polished_line", "TEXT"),
+    ("stories", "plot_threads", "TEXT"),
+    ("stories", "art_pending_round", "INTEGER"),
 ]
 
 

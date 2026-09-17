@@ -53,6 +53,16 @@ IMAGE_PROVIDER = _resolve_image_provider()
 # -> 키 발급 전에도 팀원 전원이 전체 플로우를 돌려볼 수 있다.
 USE_MOCK_AI = not GEMINI_API_KEY
 
+# ---------------------------------------------------------------- 무료 할당량 보호
+# 데모 당일 할당량 소진으로 전체가 막히는 걸 막기 위한 벤더별 일일 호출 한도.
+# 0이면 한도 없음(카운트만 하고 막지 않음). 각 벤더 대시보드에서 실제 무료 한도를
+# 확인한 뒤, 안전 마진(예: 실제 한도의 80~90%)을 두고 채워 넣는다.
+#   Gemini: https://aistudio.google.com/usage
+#   Cloudflare: 대시보드 > Workers AI > Usage
+GEMINI_TEXT_DAILY_LIMIT = int(os.getenv("GEMINI_TEXT_DAILY_LIMIT", "0"))
+GEMINI_IMAGE_DAILY_LIMIT = int(os.getenv("GEMINI_IMAGE_DAILY_LIMIT", "0"))
+CF_IMAGE_DAILY_LIMIT = int(os.getenv("CF_IMAGE_DAILY_LIMIT", "0"))
+
 # ---------------------------------------------------------------- DB
 DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{BASE_DIR / 'toksosul.db'}")
 
@@ -67,6 +77,10 @@ DEFAULT_INACTIVITY_HOURS = 24 # 무응답 시 턴 넘김까지 대기 시간
 
 # LLM 완결 추천을 몇 바퀴째부터 물어볼지 (초반엔 물어봐도 의미 없어서 비용 낭비)
 END_SUGGESTION_FROM_ROUND = 3
+
+# 남은 바퀴가 이 수 이하로 들어오면 이어쓰기 프롬프트가 '정리 모드'로 바뀐다.
+# (새 떡밥을 던지지 않고 기존 전개를 회수하는 쪽으로 유도)
+WRAP_UP_FROM_REMAINING_ROUNDS = 3
 
 # 생성 이미지 저장 위치
 MEDIA_DIR = BASE_DIR / "static" / "media"
