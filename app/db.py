@@ -33,6 +33,12 @@ _ADDED_COLUMNS = [
     ("turns", "polished_line", "TEXT"),
     ("stories", "plot_threads", "TEXT"),
     ("stories", "art_pending_round", "INTEGER"),
+    ("stories", "synopsis", "TEXT"),
+    ("stories", "arc_plan", "TEXT"),
+    ("rooms", "hero_name", "VARCHAR(20)"),
+    ("rooms", "hero_gender", "VARCHAR(10)"),
+    ("rooms", "hero_traits", "VARCHAR(100)"),
+    ("rooms", "cast_json", "TEXT"),
 ]
 
 

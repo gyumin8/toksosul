@@ -81,7 +81,31 @@ def summarize() -> dict:
         vendor = e.get("vendor") or "unknown"
         retry_by_vendor[vendor] = retry_by_vendor.get(vendor, 0) + 1
 
+    # 단계별 소요시간. "이미지가 느리다"를 감이 아니라 숫자로 확인하는 용도다.
+    # ai._timed()가 남기는 latency 이벤트를 단계 이름으로 묶어 평균/최대/중앙값을 낸다.
+    latency: dict[str, dict] = {}
+    for e in events:
+        if e.get("event") != "latency":
+            continue
+        seconds = e.get("elapsed_s")
+        if not isinstance(seconds, (int, float)):
+            continue
+        latency.setdefault(str(e.get("stage") or "unknown"), []).append(float(seconds))
+
+    latency_summary = {}
+    for stage, samples in sorted(latency.items()):
+        ordered = sorted(samples)
+        mid = len(ordered) // 2
+        median = ordered[mid] if len(ordered) % 2 else (ordered[mid - 1] + ordered[mid]) / 2
+        latency_summary[stage] = {
+            "count": len(ordered),
+            "avg_s": round(sum(ordered) / len(ordered), 2),
+            "median_s": round(median, 2),
+            "max_s": round(ordered[-1], 2),
+        }
+
     return {
+        "latency": latency_summary,
         "text_generate": {
             "total": len(text_events),
             "success": text_success,

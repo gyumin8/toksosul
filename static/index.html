@@ -13,7 +13,9 @@
 
 <header class="topbar">
   <button class="wordmark" id="homeBtn">톡소설</button>
-  <span class="who" id="who"></span>
+  <!-- 닉네임을 누르면 세션을 비우고 이름 입력 화면으로 돌아간다.
+       (localStorage에 이름이 남아 있어 계속 로비로 넘어가던 문제의 탈출구) -->
+  <button class="who" id="who" type="button" hidden></button>
 </header>
 
 <main id="app">
@@ -47,6 +49,38 @@
             <input id="timeoutHours" type="number" min="1" max="168" value="24">
           </label>
         </div>
+        <!-- 주인공 설정: 방 설정과 같은 단계에서 받는다. 전부 선택 사항이고,
+             비워두면 이야기를 시작할 때 AI가 장르에 맞춰 알아서 정한다.
+             채우면 그 값이 확정으로 굳어서 본문과 삽화 양쪽에 그대로 쓰인다. -->
+        <fieldset class="subset">
+          <legend>주인공 <span class="opt">선택 · 비워두면 AI가 정해요</span></legend>
+          <div class="row">
+            <label class="field small">
+              <span>이름</span>
+              <input id="heroName" maxlength="12" placeholder="서윤" autocomplete="off">
+            </label>
+            <label class="field small">
+              <span>성별</span>
+              <select id="heroGender">
+                <option value="">AI가 정함</option>
+                <option value="female">여성</option>
+                <option value="male">남성</option>
+              </select>
+            </label>
+          </div>
+          <label class="field">
+            <span>특징</span>
+            <input id="heroTraits" maxlength="60" placeholder="덤벙대고, 키가 작고, 잘 웃는다" autocomplete="off">
+          </label>
+        </fieldset>
+
+        <!-- 주인공 외 등장인물. 버튼으로 필요한 만큼 추가한다. -->
+        <fieldset class="subset">
+          <legend>등장인물 <span class="opt">선택 · 나머지는 AI가 채워요</span></legend>
+          <div id="castRows"></div>
+          <button type="button" class="ghost tiny add-cast" id="addCastBtn">+ 등장인물 추가</button>
+        </fieldset>
+
         <p class="hint" id="ruleHint"></p>
         <button class="primary" id="createBtn">방 만들기</button>
       </div>
@@ -81,6 +115,10 @@
         <span>첫 상황 한 줄 (비워두면 다음 사람부터 시작)</span>
         <input id="openingInput" maxlength="200" placeholder="교실 뒷문이 안에서 잠겼다." autocomplete="off">
       </label>
+
+      <!-- 인물은 방 만들 때 이미 정했다. 여기서는 확인만 하고 다시 묻지 않는다. -->
+      <p class="hint" id="castHint"></p>
+
       <button class="primary" id="startBtn">이야기 시작</button>
     </div>
   </section>
@@ -102,6 +140,13 @@
         <button class="ghost tiny" id="dismissEndBtn">더 쓸래</button>
       </div>
     </div>
+
+    <!-- 시작할 때 정해진 등장인물. 누가 주인공인지 참가자들이 알고 써야 한다. -->
+    <details class="cast-box" id="castBox" hidden>
+      <summary>등장인물</summary>
+      <p class="premise" id="premiseText"></p>
+      <ul class="cast-list" id="castList"></ul>
+    </details>
 
     <article class="thread" id="thread"></article>
 

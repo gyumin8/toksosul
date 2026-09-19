@@ -12,6 +12,7 @@ app/turn_logic.py
 """
 import json
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.orm import Session
@@ -88,10 +89,61 @@ def load_threads(story: Story) -> list[str]:
         return []
 
 
+def load_arc(story: Story) -> dict:
+    """3막 계획을 dict로 읽는다. 비어 있거나 깨졌으면 빈 dict."""
+    if not story.arc_plan:
+        return {}
+    try:
+        data = json.loads(story.arc_plan)
+        return data if isinstance(data, dict) else {}
+    except json.JSONDecodeError:
+        return {}
+
+
+def current_act(story: Story, round_number: int | None = None) -> dict:
+    """지금(또는 지정한) 바퀴가 속한 막 정보. LLM 호출 없이 계산만 한다."""
+    if round_number is None:
+        round_number = round_of(story.turn_index, story.member_count)
+    return ai.act_for_round(load_arc(story), round_number, story.room.max_rounds)
+
+
+def story_context(db: Session, story: Story) -> str:
+    """요약 + 최근 턴으로 만든 프롬프트용 컨텍스트."""
+    return ai.build_context(history_dicts(db, story), story.synopsis)
+
+
+def plan_story_arc(db: Session, story: Story, opening: str = "",
+                   hero: dict | None = None,
+                   characters: list[dict] | None = None) -> None:
+    """방을 시작할 때 1회. 3막 계획과 등장인물을 미리 정해 DB에 박아둔다.
+
+    이야기가 중구난방으로 흐르던 원인이 여기에 있었다. 설계 없이 매 턴 즉흥으로
+    이어 쓰다 보니 언제 끝날지 모르게 늘어졌다. 총 바퀴 수가 시작 시점에 정해져
+    있으므로, 그 길이에 맞춰 초/중/후반 목표를 먼저 정해두고 매 턴 주입한다.
+
+    hero: 방장이 직접 정한 주인공 {"name", "gender", "traits"}. 비워두면 AI가 정한다.
+    실패해도 시작 자체는 막지 않는다. (구간만 채운 기본 계획으로 진행)
+    """
+    try:
+        plan = ai.plan_story(story.genre, story.room.max_rounds, opening,
+                             story.member_count, hero, characters)
+    except Exception as e:
+        print(f"[plan] 이야기 설계 실패, 기본 계획으로 시작: {type(e).__name__}: {e}")
+        plan = {"premise": "", "acts": ai.split_acts(story.room.max_rounds), "cast": {}}
+
+    story.arc_plan = json.dumps(
+        {"premise": plan.get("premise", ""), "acts": plan.get("acts", [])},
+        ensure_ascii=False,
+    )
+    if plan.get("cast"):
+        story.character_sheet = json.dumps(plan["cast"], ensure_ascii=False)
+    db.commit()
+
+
 # ------------------------------------------------------------------ 완결 처리
 def finalize(db: Session, story: Story, status: str, reason: str) -> None:
     """공통 완결 처리: 에필로그 + 표지 생성 후 상태를 닫는다."""
-    context = ai.build_context(history_dicts(db, story))
+    context = story_context(db, story)
     result = ai.write_epilogue(story.genre, context, reason, load_threads(story))
 
     story.title = result["title"]
@@ -106,26 +158,60 @@ def finalize(db: Session, story: Story, status: str, reason: str) -> None:
     else:
         art = ai.generate_round_art(story.genre, context,
                                     round_of(story.turn_index, story.member_count),
-                                    load_sheet(story))
+                                    load_sheet(story), story.id)
         story.cover_image_url = art["image_url"]
 
     db.commit()
 
 
 def _on_round_complete(db: Session, story: Story, finished_round: int) -> None:
-    """한 바퀴가 끝난 직후 호출된다. 삽화 생성 + 완결 추천 판단."""
+    """한 바퀴가 끝난 직후 호출된다. 삽화 생성 + 편집자 패스(요약/떡밥/완결판단).
+
+    두 작업은 서로의 결과를 쓰지 않으므로 **동시에** 돌린다. 예전에는
+    삽화 → 떡밥갱신 → 완결추천을 순서대로 기다려서 바퀴 후처리에 네 번의
+    왕복이 직렬로 쌓였다. 지금은 (편집자 1회) ∥ (장면묘사 1회 + 이미지 1회)
+    라서 전체 대기시간이 둘 중 긴 쪽으로 줄어든다.
+
+    스레드 안에서는 DB를 건드리지 않는다. SQLAlchemy 세션은 스레드 안전하지
+    않으므로, 입력은 미리 뽑아 넘기고 결과 저장은 이 함수(메인 스레드)에서 한다.
+    """
     # 전원이 넘김 처리된 빈 바퀴면 그릴 게 없다.
     turns_in_round = [t for t in story.turns if t.round_number == finished_round and not t.is_skipped]
     if not turns_in_round:
         return
 
-    context = ai.build_context(history_dicts(db, story))
+    # --- 스레드에 넘길 입력을 메인 스레드에서 전부 읽어둔다 ---
+    context = story_context(db, story)
+    genre = story.genre
+    max_rounds = story.room.max_rounds
+    sheet = load_sheet(story)
+    threads_before = load_threads(story)
+    synopsis_before = story.synopsis or ""
+    act = current_act(story, finished_round)
 
     already = db.query(RoundArt).filter(
         RoundArt.story_id == story.id, RoundArt.round_number == finished_round
     ).first()
-    if not already:
-        art = ai.generate_round_art(story.genre, context, finished_round, load_sheet(story))
+
+    story_id = story.id
+
+    def _art_task():
+        if already:
+            return None
+        return ai.generate_round_art(genre, context, finished_round, sheet, story_id)
+
+    def _editor_task():
+        return ai.editor_pass(genre, context, finished_round, max_rounds,
+                              threads_before, synopsis_before, act)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        art_future = pool.submit(_art_task)
+        editor_future = pool.submit(_editor_task)
+        art = _settle(art_future, "삽화", None)
+        editor = _settle(editor_future, "편집자 패스", None)
+
+    # --- 결과 저장 (메인 스레드) ---
+    if art:
         db.add(RoundArt(
             story_id=story.id,
             round_number=finished_round,
@@ -136,23 +222,28 @@ def _on_round_complete(db: Session, story: Story, finished_round: int) -> None:
         if art.get("character_sheet"):
             story.character_sheet = json.dumps(art["character_sheet"], ensure_ascii=False)
 
-    # 미해결 떡밥 목록(스토리 바이블) 갱신. 이미지 생성 여부와 무관하게 매 바퀴 돈다.
-    threads = ai.update_plot_threads(story.genre, context, load_threads(story))
-    story.plot_threads = json.dumps(threads, ensure_ascii=False)
+    if editor:
+        story.synopsis = editor["synopsis"]
+        story.plot_threads = json.dumps(editor["threads"], ensure_ascii=False)
 
-    # 완결 추천: 초반 바퀴는 물어봐도 의미가 없어서 건너뛴다.
-    if finished_round >= END_SUGGESTION_FROM_ROUND:
-        verdict = ai.suggest_ending(
-            story.genre, context, finished_round, story.room.max_rounds
-        )
-        if verdict["should_end"]:
-            story.end_suggestion = verdict["reason"]
+        # 완결 추천: 초반 바퀴는 물어봐도 의미가 없어서 건너뛴다.
+        if finished_round >= END_SUGGESTION_FROM_ROUND and editor["should_end"]:
+            story.end_suggestion = editor["reason"]
             story.end_suggestion_round = finished_round
         else:
             story.end_suggestion = None
             story.end_suggestion_round = None
 
     db.commit()
+
+
+def _settle(future, label: str, default):
+    """스레드 결과를 꺼낸다. 하나가 실패해도 나머지 저장은 진행시킨다."""
+    try:
+        return future.result()
+    except Exception as e:
+        print(f"[round] {label} 실패: {type(e).__name__}: {e}")
+        return default
 
 
 def _advance(db: Session, story: Story) -> None:
@@ -304,9 +395,21 @@ def submit_turn(db: Session, story: Story, user_id: str, line: str) -> Turn:
     current_round = round_of(story.turn_index, story.member_count)
     remaining_rounds = story.room.max_rounds - current_round + 1
 
-    context = ai.build_context(history_dicts(db, story))
-    result = ai.continue_story(story.genre, context, line, member.user.nickname,
-                               remaining_rounds)
+    # 매 턴 "지금이 몇 막이고 뭘 해야 하는지" + "등장인물이 누구인지"를 같이 넘긴다.
+    # 이 둘이 빠지면 LLM이 매번 새 이야기를 시작하듯 써서 전개가 흩어진다.
+    arc = load_arc(story)
+    act = ai.act_for_round(arc, current_round, story.room.max_rounds)
+
+    context = story_context(db, story)
+    result = ai.continue_story(
+        story.genre, context, line, member.user.nickname,
+        remaining_rounds=remaining_rounds,
+        act=act,
+        character_sheet=load_sheet(story),
+        round_number=current_round,
+        max_rounds=story.room.max_rounds,
+        premise=arc.get("premise", ""),
+    )
 
     turn = Turn(
         story_id=story.id,

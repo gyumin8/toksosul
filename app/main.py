@@ -4,6 +4,7 @@ FastAPI 진입점. 실행:  uvicorn app.main:app --reload
 문서:  http://127.0.0.1:8000/docs
 화면:  http://127.0.0.1:8000/
 """
+import json
 import random
 import string
 from datetime import timedelta
@@ -17,7 +18,7 @@ from . import ai, metrics
 from . import turn_logic as tl
 from .config import (
     BASE_DIR, DEFAULT_INACTIVITY_HOURS, ENABLE_IMAGE_GEN, HARD_MAX_ROUNDS,
-    IMAGE_PROVIDER, MAX_MEMBERS, MIN_MEMBERS, USE_MOCK_AI,
+    IMAGE_PROVIDER, MAX_MEMBERS, MAX_USER_CHARACTERS, MIN_MEMBERS, USE_MOCK_AI,
 )
 from .db import get_db, init_db
 from .models import Room, RoomMember, Story, User
@@ -74,6 +75,22 @@ def get_metrics():
 
 
 # ------------------------------------------------------------------ 유저
+def user_not_found() -> HTTPException:
+    """세션이 끊어졌다는 것을 프론트가 '코드'로 구분할 수 있게 만든 404.
+
+    detail을 문자열이 아니라 dict로 내려 보내면, 프론트가 메시지 문구를 비교하지 않고
+    code == "user_not_found" 만 보고 '저장된 세션이 죽었다'고 판단할 수 있다.
+    (DB 파일을 지웠거나 서버를 새로 띄운 뒤, localStorage에 남은 옛 user_id로
+     방을 만들려다 404가 나던 문제의 원인)"""
+    return HTTPException(
+        status_code=404,
+        detail={
+            "code": "user_not_found",
+            "message": "세션이 만료되었습니다. 이름을 다시 입력해 주세요.",
+        },
+    )
+
+
 @app.post("/api/users")
 def create_user(body: UserCreate, db: Session = Depends(get_db)):
     """비밀번호 없는 닉네임 세션. 프론트가 user_id를 localStorage에 보관한다.
@@ -82,6 +99,17 @@ def create_user(body: UserCreate, db: Session = Depends(get_db)):
     db.add(user)
     db.commit()
     db.refresh(user)
+    return {"id": user.id, "nickname": user.nickname}
+
+
+@app.get("/api/users/{user_id}")
+def get_user(user_id: str, db: Session = Depends(get_db)):
+    """저장된 세션이 아직 살아 있는지 확인하는 용도.
+    프론트가 부팅할 때 이걸 먼저 호출해서, 죽은 user_id면 조용히 지우고
+    이름 입력 화면으로 되돌린다."""
+    user = db.get(User, user_id)
+    if not user:
+        raise user_not_found()
     return {"id": user.id, "nickname": user.nickname}
 
 
@@ -95,6 +123,38 @@ def _new_invite_code(db: Session) -> str:
     raise HTTPException(500, "초대 코드를 만들지 못했습니다. 다시 시도해 주세요.")
 
 
+def _clean_characters(specs) -> str | None:
+    """'등장인물 추가'로 받은 목록을 정리해 JSON 문자열로 만든다.
+
+    이름이 없는 줄(추가만 하고 안 채운 칸)은 버리고, 같은 이름은 한 번만 남긴다.
+    """
+    cleaned, seen = [], set()
+    for spec in (specs or []):
+        name = (spec.name or "").strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        cleaned.append({
+            "name": name[:20],
+            "gender": (spec.gender or "").strip().lower()[:10],
+            "traits": (spec.traits or "").strip()[:100],
+        })
+        if len(cleaned) >= MAX_USER_CHARACTERS:
+            break
+    return json.dumps(cleaned, ensure_ascii=False) if cleaned else None
+
+
+def _load_characters(room: Room) -> list[dict]:
+    """방에 저장해둔 등장인물 목록을 읽는다. 없거나 깨졌으면 빈 리스트."""
+    if not room.cast_json:
+        return []
+    try:
+        data = json.loads(room.cast_json)
+        return [d for d in data if isinstance(d, dict)] if isinstance(data, list) else []
+    except json.JSONDecodeError:
+        return []
+
+
 def _room_payload(db: Session, room: Room) -> dict:
     members = tl.ordered_members(db, room.id)
     story = room.stories[-1] if room.stories else None
@@ -106,6 +166,10 @@ def _room_payload(db: Session, room: Room) -> dict:
         "max_rounds": room.max_rounds,
         "inactivity_hours": room.inactivity_hours,
         "status": room.status,
+        # 방 만들 때 정한 주인공. 대기실에서 표시하고, 시작 폼에 미리 채워준다.
+        "hero": {"name": room.hero_name or "", "gender": room.hero_gender or "",
+                 "traits": room.hero_traits or ""},
+        "characters": _load_characters(room),
         "members": [
             {"member_id": m.id, "user_id": m.user_id,
              "nickname": m.user.nickname, "turn_order": m.turn_order}
@@ -119,7 +183,7 @@ def _room_payload(db: Session, room: Room) -> dict:
 def create_room(body: RoomCreate, db: Session = Depends(get_db)):
     user = db.get(User, body.user_id)
     if not user:
-        raise HTTPException(404, "유저를 찾을 수 없습니다.")
+        raise user_not_found()
 
     room = Room(
         name=body.name.strip(),
@@ -127,6 +191,11 @@ def create_room(body: RoomCreate, db: Session = Depends(get_db)):
         host_id=user.id,
         max_rounds=min(body.max_rounds, HARD_MAX_ROUNDS),
         inactivity_hours=body.inactivity_hours,
+        # 주인공 설정은 방에 저장해둔다. 대기실에서 보여주고, 시작할 때 쓴다.
+        hero_name=(body.hero_name or "").strip() or None,
+        hero_gender=(body.hero_gender or "").strip().lower() or None,
+        hero_traits=(body.hero_traits or "").strip() or None,
+        cast_json=_clean_characters(body.characters),
     )
     db.add(room)
     db.flush()
@@ -138,6 +207,11 @@ def create_room(body: RoomCreate, db: Session = Depends(get_db)):
 
 @app.post("/api/rooms/join")
 def join_room(body: RoomJoin, db: Session = Depends(get_db)):
+    # 방 만들기와 똑같이 세션부터 확인한다. 예전에는 확인 없이 RoomMember를 넣어서,
+    # 존재하지 않는 user_id가 멤버로 들어가면 나중에 m.user.nickname에서 500이 났다.
+    if not db.get(User, body.user_id):
+        raise user_not_found()
+
     room = db.query(Room).filter(Room.invite_code == body.invite_code.upper().strip()).first()
     if not room:
         raise HTTPException(404, "그런 초대 코드가 없습니다. 코드를 다시 확인해 주세요.")
@@ -211,6 +285,20 @@ def start_story(room_id: str, body: StoryStart, background_tasks: BackgroundTask
     db.commit()
     db.refresh(story)
 
+    # 이야기의 뼈대(초/중/후반 목표)와 등장인물을 먼저 정해 DB에 박아둔다.
+    # 첫 턴부터 이 설정 위에서 써야 하므로 백그라운드로 미루지 않고 여기서 기다린다.
+    # (시작할 때 딱 1회 드는 비용이다)
+    # 인물 설정은 방 만들 때 정한 값을 그대로 쓴다. (시작 화면에서 다시 묻지 않는다)
+    hero = {
+        "name": (room.hero_name or "").strip(),
+        "gender": (room.hero_gender or "").strip().lower(),
+        "traits": (room.hero_traits or "").strip(),
+    }
+    tl.plan_story_arc(db, story, body.opening or "",
+                      hero if any(hero.values()) else None,
+                      _load_characters(room))
+    db.refresh(story)
+
     # 방장이 첫 상황을 적었으면 그대로 1번 턴으로 처리한다.
     if body.opening and body.opening.strip():
         try:
@@ -231,7 +319,25 @@ def _story_payload(db: Session, story: Story) -> dict:
 
     arts = {a.round_number: {"image_url": a.image_url, "caption": a.caption} for a in story.arts}
 
+    # 현재 막 정보. 프론트가 "초반부 · 3/20바퀴"처럼 진행 상황을 보여준다.
+    arc = tl.load_arc(story)
+    current_round = tl.round_of(story.turn_index, story.member_count)
+    act = tl.ai.act_for_round(arc, current_round, story.room.max_rounds)
+    sheet = tl.load_sheet(story)
+
     return {
+        "premise": arc.get("premise", ""),
+        "act": {"name": act["name"], "from": act["from"], "to": act["to"],
+                "goal": act["goal"], "index": act["index"], "total": act["total"]},
+        # 등장인물 소개 (성별/역할/성격). 외모 영어 묘사는 프론트에 내리지 않는다.
+        "cast": [
+            {"name": name,
+             "gender": (entry.get("gender") if isinstance(entry, dict) else "") or "",
+             "age": (entry.get("age") if isinstance(entry, dict) else "") or "",
+             "role": (entry.get("role") if isinstance(entry, dict) else "") or "",
+             "personality": (entry.get("personality") if isinstance(entry, dict) else "") or ""}
+            for name, entry in sheet.items()
+        ],
         "id": story.id,
         "room_id": story.room_id,
         "room_name": story.room.name,

@@ -47,6 +47,19 @@ class Room(Base):
     host_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"))
     max_rounds: Mapped[int] = mapped_column(Integer, default=20)
     inactivity_hours: Mapped[int] = mapped_column(Integer, default=24)
+
+    # 주인공 설정. 방을 만들 때 방장이 바퀴 제한/대기 시간과 함께 정한다.
+    # 비워두면 이야기를 시작할 때 AI가 장르에 맞춰 알아서 정한다.
+    # 방 단위로 저장하는 이유: 대기실에서 친구들이 모이는 동안 "우리 주인공은
+    # 누구다"가 이미 정해져 있어야 하고, 방장이 시작 직전에 고칠 수도 있어야 한다.
+    hero_name: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    hero_gender: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    hero_traits: Mapped[str | None] = mapped_column(String(100), nullable=True)
+
+    # 주인공 외에 방장이 '등장인물 추가'로 직접 정의한 인물들.
+    # [{"name": "...", "gender": "...", "traits": "..."}] 형태의 JSON.
+    cast_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     # waiting: 모집 중 / playing: 집필 중 / finished: 완결
     status: Mapped[str] = mapped_column(String(20), default="waiting")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
@@ -101,6 +114,16 @@ class Story(Base):
     # LLM이 "이쯤에서 끝내도 좋겠다"고 판단했을 때 채워지는 필드 (방장 승인 대기)
     end_suggestion: Mapped[str | None] = mapped_column(Text, nullable=True)
     end_suggestion_round: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    # 지금까지의 줄거리 압축 요약. 매 바퀴 끝날 때 갱신된다.
+    # 프롬프트에 "최근 N턴 원문" 앞에 붙어서, 컨텍스트 밖으로 밀려난 초반 전개를
+    # LLM이 계속 기억하게 한다. (이야기가 중구난방으로 흐르는 것을 막는 핵심)
+    synopsis: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # 시작할 때 총 바퀴 수를 보고 세운 3막 계획.
+    # {"premise": "...", "acts": [{"name":"초반","from":1,"to":6,"goal":"..."}, ...]} JSON.
+    # 매 턴 현재 바퀴가 어느 막인지 계산해 그 막의 목표를 프롬프트에 주입한다.
+    arc_plan: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # 미해결 떡밥 목록(스토리 바이블). ["...", "..."] 형태의 JSON.
     # build_context()가 최근 턴만 넘기므로, 초반 떡밥이 나중 바퀴에서 컨텍스트 밖으로
