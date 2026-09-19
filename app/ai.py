@@ -37,13 +37,15 @@ from . import metrics, quota
 from .config import (
     ACT_NAMES, ACT_RATIOS, CAST_MAX, CAST_MIN, CF_ACCOUNT_ID, CF_API_TOKEN,
     CF_IMAGE_DAILY_LIMIT, CF_IMAGE_MODEL, CF_IMAGE_SEND_SEED, CF_IMAGE_STEPS,
-    CF_R2_ACCESS_KEY_ID, CF_R2_BUCKET, CF_R2_PUBLIC_URL, CF_R2_SECRET_ACCESS_KEY,
     ENABLE_IMAGE_GEN,
     GEMINI_API_KEY,
     GEMINI_IMAGE_DAILY_LIMIT, GEMINI_IMAGE_MODEL, GEMINI_TEXT_DAILY_LIMIT,
     GENAI_TIMEOUT_MS,
     GEMINI_TEXT_MODEL, IMAGE_PROVIDER, MEDIA_DIR, RECENT_TURN_LIMIT,
-    SYNOPSIS_MAX_CHARS, USE_MOCK_AI, USE_R2, WRAP_UP_FROM_REMAINING_ROUNDS,
+    SUPABASE_BUCKET, SUPABASE_PROJECT_REF, SUPABASE_S3_ACCESS_KEY_ID,
+    SUPABASE_S3_REGION, SUPABASE_S3_SECRET_ACCESS_KEY,
+    SYNOPSIS_MAX_CHARS, USE_MOCK_AI, USE_SUPABASE_STORAGE,
+    WRAP_UP_FROM_REMAINING_ROUNDS,
 )
 
 _client = None
@@ -231,51 +233,55 @@ def _generate_json(prompt: str, attempts: int = 2, label: str = "json") -> dict:
     return {}
 
 
-_r2_client = None
-_R2_CONTENT_TYPES = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png"}
+_storage_client = None
+_STORAGE_CONTENT_TYPES = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png"}
 
 
-def _get_r2_client():
-    """R2(S3 호환) 클라이언트를 지연 생성한다.
+def _get_storage_client():
+    """Supabase Storage(S3 호환) 클라이언트를 지연 생성한다.
 
-    R2에는 api.cloudflare.com REST API로도 접근할 수 있지만, 객체 업로드/다운로드는
-    공식적으로 S3 호환 API를 쓰도록 안내한다. S3는 매 요청마다 AWS SigV4 서명이
-    필요한데 직접 구현하면 서명 버그가 나기 쉬워서, 검증된 boto3를 그대로 쓴다.
-    (다른 Cloudflare 호출엔 urllib만 쓰는 것과 다른 예외 — 여긴 서명 알고리즘이
-    걸린 문제라 직접 구현보다 표준 라이브러리를 쓰는 쪽이 더 안전하다.)
+    Supabase Storage는 자체 REST API 외에 S3 호환 API도 제공한다. S3는 매 요청마다
+    AWS SigV4 서명이 필요한데 직접 구현하면 서명 버그가 나기 쉬워서, 검증된
+    boto3를 그대로 쓴다. (다른 Cloudflare 호출엔 urllib만 쓰는 것과 다른 예외 —
+    여긴 서명 알고리즘이 걸린 문제라 직접 구현보다 표준 라이브러리를 쓰는 쪽이
+    더 안전하다.)
+
+    처음엔 Cloudflare R2로 만들었으나 R2는 카드 등록이 필요해 Supabase
+    Storage(카드 불필요, 무료 1GB)로 바꿨다.
     """
-    global _r2_client
-    if _r2_client is None:
+    global _storage_client
+    if _storage_client is None:
         import boto3
-        _r2_client = boto3.client(
+        _storage_client = boto3.client(
             "s3",
-            endpoint_url=f"https://{CF_ACCOUNT_ID}.r2.cloudflarestorage.com",
-            aws_access_key_id=CF_R2_ACCESS_KEY_ID,
-            aws_secret_access_key=CF_R2_SECRET_ACCESS_KEY,
-            region_name="auto",
+            endpoint_url=f"https://{SUPABASE_PROJECT_REF}.storage.supabase.co/storage/v1/s3",
+            aws_access_key_id=SUPABASE_S3_ACCESS_KEY_ID,
+            aws_secret_access_key=SUPABASE_S3_SECRET_ACCESS_KEY,
+            region_name=SUPABASE_S3_REGION,
         )
-    return _r2_client
+    return _storage_client
 
 
 def _save_image(raw_b64: str, ext: str) -> str:
     """base64 이미지를 저장하고 웹에서 접근 가능한 URL을 돌려준다.
 
-    R2가 설정돼 있으면(USE_R2) 그쪽에 올린다 — Render 같은 무료 호스팅은
-    재배포/재시작마다 로컬 디스크가 초기화돼서, static/media에 저장한 삽화가
-    전부 사라지기 때문이다. R2 미설정 시(로컬 개발)에는 기존처럼 로컬 디스크에
-    저장한다.
+    Supabase Storage가 설정돼 있으면(USE_SUPABASE_STORAGE) 그쪽에 올린다 —
+    Render 같은 무료 호스팅은 재배포/재시작마다 로컬 디스크가 초기화돼서,
+    static/media에 저장한 삽화가 전부 사라지기 때문이다. 미설정 시(로컬 개발)에는
+    기존처럼 로컬 디스크에 저장한다.
     """
     filename = f"{uuid.uuid4().hex}.{ext}"
     raw = base64.b64decode(raw_b64)
 
-    if USE_R2:
-        _get_r2_client().put_object(
-            Bucket=CF_R2_BUCKET,
+    if USE_SUPABASE_STORAGE:
+        _get_storage_client().put_object(
+            Bucket=SUPABASE_BUCKET,
             Key=filename,
             Body=raw,
-            ContentType=_R2_CONTENT_TYPES.get(ext, "application/octet-stream"),
+            ContentType=_STORAGE_CONTENT_TYPES.get(ext, "application/octet-stream"),
         )
-        return f"{CF_R2_PUBLIC_URL}/{filename}"
+        return (f"https://{SUPABASE_PROJECT_REF}.supabase.co"
+                f"/storage/v1/object/public/{SUPABASE_BUCKET}/{filename}")
 
     (MEDIA_DIR / filename).write_bytes(raw)
     return f"/static/media/{filename}"
