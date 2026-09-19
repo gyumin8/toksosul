@@ -120,6 +120,25 @@ ROUND_TASK_TIMEOUT = int(os.getenv("ROUND_TASK_TIMEOUT", "90"))
 # google-genai SDK 호출 타임아웃(밀리초). 주지 않으면 무한정 기다릴 수 있다.
 GENAI_TIMEOUT_MS = int(os.getenv("GENAI_TIMEOUT_MS", "60000"))
 
-# 생성 이미지 저장 위치
+# 생성 이미지 저장 위치 (로컬 디스크 폴백용. Supabase Storage 미설정 시에만 쓰인다)
 MEDIA_DIR = BASE_DIR / "static" / "media"
 MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+
+# ---------------------------------------------------------------- 이미지 저장소 (Supabase Storage)
+# Render 같은 무료 호스팅은 재배포/재시작마다 로컬 디스크를 초기화한다. 그러면
+# static/media에 저장한 삽화가 전부 사라지므로, 배포 환경에서는 Supabase
+# Storage(무료 1GB, 카드 불필요)에 올려 서버 재시작과 무관하게 남게 한다.
+# (처음엔 Cloudflare R2를 검토했으나 R2는 카드 등록이 필요해 제외했다.)
+# 네 값이 전부 채워졌을 때만 쓰고, 하나라도 비었으면 기존처럼 로컬 디스크에
+# 저장한다 — 로컬 개발 중엔 계정 없이도 그대로 테스트할 수 있어야 하기 때문이다.
+SUPABASE_PROJECT_REF = os.getenv("SUPABASE_PROJECT_REF", "").strip()
+SUPABASE_S3_ACCESS_KEY_ID = os.getenv("SUPABASE_S3_ACCESS_KEY_ID", "").strip()
+SUPABASE_S3_SECRET_ACCESS_KEY = os.getenv("SUPABASE_S3_SECRET_ACCESS_KEY", "").strip()
+SUPABASE_BUCKET = os.getenv("SUPABASE_BUCKET", "").strip()
+# 버킷을 만든 프로젝트의 리전. 대시보드 프로젝트 설정에서 확인 (예: ap-northeast-2)
+SUPABASE_S3_REGION = os.getenv("SUPABASE_S3_REGION", "us-east-1").strip()
+
+USE_SUPABASE_STORAGE = bool(
+    SUPABASE_PROJECT_REF and SUPABASE_S3_ACCESS_KEY_ID
+    and SUPABASE_S3_SECRET_ACCESS_KEY and SUPABASE_BUCKET
+)
