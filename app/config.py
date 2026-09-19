@@ -120,6 +120,21 @@ ROUND_TASK_TIMEOUT = int(os.getenv("ROUND_TASK_TIMEOUT", "90"))
 # google-genai SDK 호출 타임아웃(밀리초). 주지 않으면 무한정 기다릴 수 있다.
 GENAI_TIMEOUT_MS = int(os.getenv("GENAI_TIMEOUT_MS", "60000"))
 
-# 생성 이미지 저장 위치
+# 생성 이미지 저장 위치 (로컬 디스크 폴백용. R2 미설정 시에만 실제로 쓰인다)
 MEDIA_DIR = BASE_DIR / "static" / "media"
 MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+
+# ---------------------------------------------------------------- 이미지 저장소 (Cloudflare R2)
+# Render 같은 무료 호스팅은 재배포/재시작마다 로컬 디스크를 초기화한다. 그러면
+# static/media에 저장한 삽화가 전부 사라지므로, 배포 환경에서는 R2(무료 10GB,
+# 카드 불필요)에 올려 서버 재시작과 무관하게 남게 한다. 네 값이 전부 채워졌을
+# 때만 R2를 쓰고, 하나라도 비었으면 기존처럼 로컬 디스크에 저장한다 — 로컬
+# 개발 중엔 R2 계정 없이도 그대로 테스트할 수 있어야 하기 때문이다.
+CF_R2_ACCESS_KEY_ID = os.getenv("CF_R2_ACCESS_KEY_ID", "").strip()
+CF_R2_SECRET_ACCESS_KEY = os.getenv("CF_R2_SECRET_ACCESS_KEY", "").strip()
+CF_R2_BUCKET = os.getenv("CF_R2_BUCKET", "").strip()
+# R2 버킷의 공개 접근 URL(버킷 설정에서 r2.dev 활성화 또는 커스텀 도메인 연결 후
+# 나오는 값). 끝에 슬래시 없이 넣는다. 예: https://pub-xxxx.r2.dev
+CF_R2_PUBLIC_URL = os.getenv("CF_R2_PUBLIC_URL", "").strip().rstrip("/")
+
+USE_R2 = bool(CF_R2_ACCESS_KEY_ID and CF_R2_SECRET_ACCESS_KEY and CF_R2_BUCKET and CF_R2_PUBLIC_URL)
