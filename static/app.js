@@ -583,11 +583,28 @@ function renderDone(story) {
 }
 
 /* ------------------------------------------------------------ 폴링 */
+/* 탭이 화면에 없으면 폴링을 멈춘다.
+   비동기 턴제라 안 보는 동안 갱신할 이유가 없는데, 예전에는 탭을 열어둔 채
+   두면 8초마다 계속 요청이 나갔다(탭 하나당 시간당 450회). 서버 부하도 부하지만,
+   ngrok 같은 터널의 무료 요청 한도를 이것만으로 다 써버린다.
+   돌아오면 즉시 한 번 새로고침해서 밀린 내용을 바로 받는다. */
+document.addEventListener("visibilitychange", () => {
+  if (!state.pollFn) return;
+  if (document.hidden) {
+    if (state.pollTimer) clearInterval(state.pollTimer);
+    state.pollTimer = null;
+  } else if (!state.pollTimer) {
+    state.pollTimer = setInterval(state.pollFn, state.pollInterval || POLL_MS);
+    state.pollFn();
+  }
+});
+
 function startPolling(fn, intervalMs = POLL_MS) {
   stopPolling();
   state.pollFn = fn;
   state.pollInterval = intervalMs;
-  state.pollTimer = setInterval(fn, intervalMs);
+  // 숨은 탭에서는 타이머를 걸지 않는다. 돌아올 때 visibilitychange가 켜준다.
+  state.pollTimer = document.hidden ? null : setInterval(fn, intervalMs);
 }
 
 function stopPolling() {
